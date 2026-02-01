@@ -11,14 +11,10 @@
             "id": "933f10654a125ab2",
             "type": "leaf",
             "state": {
-              "type": "split-diff-view",
-              "state": {
-                "aFile": ".obsidian/workspace.json",
-                "bFile": ".obsidian/workspace.json",
-                "aRef": ""
-              },
-              "icon": "diff",
-              "title": "Diff: workspace.json  (Working Tree)"
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
             }
           }
         ]
@@ -78,7 +74,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 200
+    "width": 218.5
   },
   "right": {
     "id": "7e247ef8022f490c",
@@ -113,12 +109,11 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "Welcome.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from Welcome"
+              "title": "Outgoing links"
             }
           },
           {
@@ -173,13 +168,23 @@
               "icon": "git-pull-request",
               "title": "Source Control"
             }
+          },
+          {
+            "id": "2bc5a57bebb08df7",
+            "type": "leaf",
+            "state": {
+              "type": "calendar",
+              "state": {},
+              "icon": "calendar-with-checkmark",
+              "title": "Calendar"
+            }
           }
         ],
         "currentTab": 5
       }
     ],
     "direction": "horizontal",
-    "width": 460.5
+    "width": 269.5
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -193,26 +198,27 @@
       "obsidian-git:Open Git source control": false
     }
   },
-  "active": "933f10654a125ab2",
+  "active": "0b0d28768bd07fd0",
   "lastOpenFiles": [
+    "docs/新入社員向けオンボーディング.md",
+    "docs/クイックスタートガイド.md",
+    "docs/daily/相談事項.md",
+    "docs/projects/無題のファイル.canvas",
+    "docs/daily/2026-01-23.md",
     "README.md",
+    "team/guchi/code-snippets/Python-Dataview検索.md",
+    "docs/reference/Welcome.md",
     "team/guchi/projects/インフルエンサー管理システムER図_レビュー結果.md",
     "team/guchi/projects/インフルエンサー管理システムER図.md",
-    "docs/projects/無題のファイル.canvas",
     "team/iku/ikuraちゃんに今後やって欲しいこと.md",
     "Untitled.base",
     "team/guchi/projects/Obsidian環境構築.md",
-    "docs/daily/2026-01-23.md",
-    "docs/daily/相談事項.md",
     "docs/projects/無題のファイル.md",
-    "docs/新入社員向けオンボーディング.md",
-    "docs/クイックスタートガイド.md",
     "無題のファイル.base",
     "無題のファイル.canvas",
     "docs/daily/2026-01-28.md",
     "team/guchi/daily/2026-01-28.md",
     "team/guchi/notes/Obsidian使い方ガイド.md",
-    "team/guchi/code-snippets/Python-Dataview検索.md",
     "2026-01-28.md",
     "templates/project-template.md",
     "templates/meeting-note-template.md",
@@ -230,7 +236,6 @@
     "team/iku",
     "team/guchi",
     "team",
-    "docs/reference/Welcome.md",
     "Welcome.md"
   ]
 }
