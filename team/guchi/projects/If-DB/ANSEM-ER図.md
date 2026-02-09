@@ -143,11 +143,12 @@ ALTER COLUMN updated_by SET NOT NULL;
 - **削除制約**: 原則 `ON DELETE RESTRICT` （削除禁止）
 - **更新制約**: デフォルト（CASCADE）
 
-#### 例外ルール
-- **集計テーブル**: 外部キー制約なし
-  - `t_daily_performance_details`
-  - `t_daily_click_details`
-  - **理由**: スナップショット方式、パフォーマンス優先
+#### 集計テーブルの方針
+- **集計テーブル**: 外部キー制約あり + スナップショット方式
+  - `t_daily_performance_details` → `t_partners`, `t_partner_sites`, `m_clients`, `m_ad_contents`
+  - `t_daily_click_details` → `t_partner_sites`
+  - **FK制約**: データ整合性を担保（ON DELETE RESTRICT）
+  - **スナップショット**: 名前カラム（partner_name等）を非正規化して保持し、集計時点の名称を記録
 
 #### 命名規則
 ```sql
@@ -315,9 +316,14 @@ t_unit_prices
   ├─ m_ad_contents
   └─ m_clients
 
-（集計テーブルは外部キー制約なし）
-t_daily_performance_details
-t_daily_click_details
+t_daily_performance_details（スナップショット方式・FK制約あり）
+  ├─ t_partners（partner_id）
+  ├─ t_partner_sites（site_id）
+  ├─ m_clients（client_id）
+  └─ m_ad_contents（content_id）
+
+t_daily_click_details（スナップショット方式・FK制約あり）
+  └─ t_partner_sites（site_id）
 ```
 
 ---
@@ -401,11 +407,15 @@ erDiagram
     m_ad_groups ||--o{ t_campaigns : "ad_group_id"
 
     %% ============================================================
-    %% 📈 集計系トランザクション（外部キーなし）
+    %% 📈 集計系トランザクション（FK制約あり・スナップショット方式）
     %% ============================================================
 
-    t_daily_performance_details
-    t_daily_click_details
+    t_partners ||--o{ t_daily_performance_details : "partner_id"
+    t_partner_sites ||--o{ t_daily_performance_details : "site_id"
+    m_clients ||--o{ t_daily_performance_details : "client_id"
+    m_ad_contents ||--o{ t_daily_performance_details : "content_id"
+
+    t_partner_sites ||--o{ t_daily_click_details : "site_id"
 
     %% ============================================================
     %% テーブル定義（主要カラムのみ）
@@ -488,6 +498,29 @@ erDiagram
         BIGINT unit_price_id PK
         BIGINT site_id FK
         DECIMAL unit_price
+    }
+
+    t_daily_performance_details {
+        DATE action_date PK
+        BIGINT partner_id PK_FK
+        BIGINT site_id PK_FK
+        BIGINT client_id PK_FK
+        BIGINT content_id PK_FK
+        SMALLINT status_id PK
+        TEXT partner_name
+        TEXT site_name
+        TEXT client_name
+        TEXT content_name
+        INTEGER cv_count
+        DECIMAL client_action_cost
+        DECIMAL unit_price
+    }
+
+    t_daily_click_details {
+        DATE action_date PK
+        BIGINT site_id PK_FK
+        TEXT site_name
+        INTEGER click_count
     }
 ```
 
@@ -1639,46 +1672,113 @@ COMMENT ON COLUMN t_unit_prices.end_at IS '有効期間終了日（NULL=無期�
 
 #### CREATE文
 ```sql
+-- ============================================================
+-- 📊 日次パフォーマンス詳細（CV版・パーティション対応）
+-- ============================================================
+
 CREATE TABLE t_daily_performance_details (
+  -- 集計軸（Dimensions）
   action_date DATE NOT NULL,
   partner_id BIGINT NOT NULL,
-  site_id BIGINT NOT NULL,
+  site_id BIGINT,
   client_id BIGINT NOT NULL,
-  content_id BIGINT NOT NULL,
-  status_id SMALLINT NOT NULL,
-  partner_name TEXT NOT NULL,
-  site_name TEXT NOT NULL,
-  client_name TEXT NOT NULL,
-  content_name TEXT NOT NULL,
+  content_id BIGINT,
+  status_id SMALLINT NOT NULL DEFAULT 1,
+
+  -- 表示用名称（Snapshots）
+  partner_name TEXT,
+  site_name TEXT,
+  client_name TEXT,
+  content_name TEXT,
+
+  -- 集計値（Metrics）
   cv_count INTEGER NOT NULL DEFAULT 0,
   client_action_cost DECIMAL(12, 0) NOT NULL DEFAULT 0,
   unit_price DECIMAL(12, 0) NOT NULL DEFAULT 0,
-  created_by BIGINT NOT NULL,
-  updated_by BIGINT NOT NULL,
+
+  -- 監査
+  created_by BIGINT NOT NULL DEFAULT 1,
+  updated_by BIGINT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-  PRIMARY KEY (action_date, partner_id, site_id, client_id, content_id, status_id)
+  -- 複合主キー
+  PRIMARY KEY (action_date, partner_id, COALESCE(site_id, 0), client_id, COALESCE(content_id, 0), status_id),
+
+  -- 外部キー制約
+  CONSTRAINT fk_daily_perf_partner
+    FOREIGN KEY (partner_id)
+    REFERENCES t_partners(partner_id)
+    ON DELETE RESTRICT,
+
+  CONSTRAINT fk_daily_perf_site
+    FOREIGN KEY (site_id)
+    REFERENCES t_partner_sites(site_id)
+    ON DELETE RESTRICT,
+
+  CONSTRAINT fk_daily_perf_client
+    FOREIGN KEY (client_id)
+    REFERENCES m_clients(client_id)
+    ON DELETE RESTRICT,
+
+  CONSTRAINT fk_daily_perf_content
+    FOREIGN KEY (content_id)
+    REFERENCES m_ad_contents(content_id)
+    ON DELETE RESTRICT
 ) PARTITION BY RANGE (action_date);
 
-CREATE INDEX idx_daily_performance_partner ON t_daily_performance_details(partner_id, action_date);
-CREATE INDEX idx_daily_performance_site ON t_daily_performance_details(site_id, action_date);
-CREATE INDEX idx_daily_performance_client ON t_daily_performance_details(client_id, action_date);
-CREATE INDEX idx_daily_performance_content ON t_daily_performance_details(content_id, action_date);
-
-COMMENT ON TABLE t_daily_performance_details IS '日次パフォーマンス集計（CV）※外部キー制約なし・パーティション対応';
-COMMENT ON COLUMN t_daily_performance_details.status_id IS 'ステータス（1: 承認済, 2: 未承認, 3: 却下）';
-
--- パーティション作成例
-CREATE TABLE t_daily_performance_details_2024 PARTITION OF t_daily_performance_details
+-- パーティション作成（直近3年分）
+CREATE TABLE t_daily_perf_2024 PARTITION OF t_daily_performance_details
   FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
 
-CREATE TABLE t_daily_performance_details_2025 PARTITION OF t_daily_performance_details
+CREATE TABLE t_daily_perf_2025 PARTITION OF t_daily_performance_details
   FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
 
-CREATE TABLE t_daily_performance_details_2026 PARTITION OF t_daily_performance_details
+CREATE TABLE t_daily_perf_2026 PARTITION OF t_daily_performance_details
   FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+
+-- インデックス（検索高速化）
+CREATE INDEX idx_perf_detail_date
+  ON t_daily_performance_details(action_date);
+
+CREATE INDEX idx_perf_detail_partner
+  ON t_daily_performance_details(partner_id, action_date);
+
+CREATE INDEX idx_perf_detail_client
+  ON t_daily_performance_details(client_id, action_date);
+
+CREATE INDEX idx_perf_detail_content
+  ON t_daily_performance_details(content_id, action_date);
+
+CREATE INDEX idx_perf_detail_status
+  ON t_daily_performance_details(status_id, action_date);
+
+-- テーブルコメント
+COMMENT ON TABLE t_daily_performance_details IS '日次パフォーマンス詳細（CV版・トランザクション）。レンジパーティション対応で大量データを効率的に管理。';
+
+-- カラムコメント
+COMMENT ON COLUMN t_daily_performance_details.action_date IS '集計日（パーティションキー）';
+COMMENT ON COLUMN t_daily_performance_details.partner_id IS 'パートナーID（FK → t_partners）';
+COMMENT ON COLUMN t_daily_performance_details.site_id IS 'サイトID（FK → t_partner_sites / NULL=未設定）';
+COMMENT ON COLUMN t_daily_performance_details.client_id IS 'クライアントID（FK → m_clients）';
+COMMENT ON COLUMN t_daily_performance_details.content_id IS 'コンテンツID（FK → m_ad_contents / NULL=未設定）';
+COMMENT ON COLUMN t_daily_performance_details.status_id IS 'ステータスID（1:承認済み, 2:未承認, 9:キャンセル等）';
+COMMENT ON COLUMN t_daily_performance_details.partner_name IS 'パートナー名（スナップショット・集計時点の名称）';
+COMMENT ON COLUMN t_daily_performance_details.site_name IS 'サイト名（スナップショット・集計時点の名称）';
+COMMENT ON COLUMN t_daily_performance_details.client_name IS 'クライアント名（スナップショット・集計時点の名称）';
+COMMENT ON COLUMN t_daily_performance_details.content_name IS 'コンテンツ名（スナップショット・集計時点の名称）';
+COMMENT ON COLUMN t_daily_performance_details.cv_count IS 'CV件数（コンバージョン数）';
+COMMENT ON COLUMN t_daily_performance_details.client_action_cost IS '報酬総額（売上）。クライアントから支払われる金額。';
+COMMENT ON COLUMN t_daily_performance_details.unit_price IS '平均単価（総額÷件数）。表示用。';
+COMMENT ON COLUMN t_daily_performance_details.created_by IS '作成者（システムユーザーID=1）';
+COMMENT ON COLUMN t_daily_performance_details.updated_by IS '最終更新者（システムユーザーID=1）';
+COMMENT ON COLUMN t_daily_performance_details.created_at IS '作成日時';
+COMMENT ON COLUMN t_daily_performance_details.updated_at IS '最終更新日時';
 ```
+
+> [!NOTE]
+> `site_id` と `content_id` はNULL許容。未設定の場合はNULLが入る（FK制約はNULLをスキップするため整合性を保てる）。
+> 複合主キーではCOALESCEでNULLを0に変換し、一意性を担保。
 
 ---
 
@@ -1689,33 +1789,75 @@ CREATE TABLE t_daily_performance_details_2026 PARTITION OF t_daily_performance_d
 
 #### CREATE文
 ```sql
+-- ============================================================
+-- 📊 日次クリック詳細（パーティション対応）
+-- ============================================================
+
 CREATE TABLE t_daily_click_details (
+  -- 集計軸（Dimensions）
   action_date DATE NOT NULL,
-  site_id BIGINT NOT NULL,
-  site_name TEXT NOT NULL,
+  site_id BIGINT,
+
+  -- 表示用名称（Snapshots）
+  site_name TEXT,
+
+  -- 集計値（Metrics）
   click_count INTEGER NOT NULL DEFAULT 0,
-  created_by BIGINT NOT NULL,
-  updated_by BIGINT NOT NULL,
+
+  -- 監査
+  created_by BIGINT NOT NULL DEFAULT 1,
+  updated_by BIGINT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-  PRIMARY KEY (action_date, site_id)
+  -- 複合主キー
+  PRIMARY KEY (action_date, COALESCE(site_id, 0)),
+
+  -- 外部キー制約
+  CONSTRAINT fk_daily_click_site
+    FOREIGN KEY (site_id)
+    REFERENCES t_partner_sites(site_id)
+    ON DELETE RESTRICT
 ) PARTITION BY RANGE (action_date);
 
-CREATE INDEX idx_daily_click_site ON t_daily_click_details(site_id, action_date);
-
-COMMENT ON TABLE t_daily_click_details IS '日次クリック集計※外部キー制約なし・パーティション対応';
-
--- パーティション作成例
-CREATE TABLE t_daily_click_details_2024 PARTITION OF t_daily_click_details
+-- パーティション作成（直近3年分）
+CREATE TABLE t_daily_click_2024 PARTITION OF t_daily_click_details
   FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
 
-CREATE TABLE t_daily_click_details_2025 PARTITION OF t_daily_click_details
+CREATE TABLE t_daily_click_2025 PARTITION OF t_daily_click_details
   FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
 
-CREATE TABLE t_daily_click_details_2026 PARTITION OF t_daily_click_details
+CREATE TABLE t_daily_click_2026 PARTITION OF t_daily_click_details
   FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+
+-- インデックス（検索高速化）
+CREATE INDEX idx_click_detail_date
+  ON t_daily_click_details(action_date);
+
+CREATE INDEX idx_click_detail_site
+  ON t_daily_click_details(site_id, action_date);
+
+CREATE INDEX idx_click_detail_count
+  ON t_daily_click_details(click_count DESC)
+  WHERE click_count > 0;
+
+-- テーブルコメント
+COMMENT ON TABLE t_daily_click_details IS '日次クリック詳細（トランザクション）。レンジパーティション対応で大量データを効率的に管理。';
+
+-- カラムコメント
+COMMENT ON COLUMN t_daily_click_details.action_date IS '集計日（パーティションキー）';
+COMMENT ON COLUMN t_daily_click_details.site_id IS 'サイトID（FK → t_partner_sites / NULL=未設定）';
+COMMENT ON COLUMN t_daily_click_details.site_name IS 'サイト名（スナップショット・集計時点の名称）';
+COMMENT ON COLUMN t_daily_click_details.click_count IS 'クリック件数（広告リンクのクリック数）';
+COMMENT ON COLUMN t_daily_click_details.created_by IS '作成者（システムユーザーID=1）';
+COMMENT ON COLUMN t_daily_click_details.updated_by IS '最終更新者（システムユーザーID=1）';
+COMMENT ON COLUMN t_daily_click_details.created_at IS '作成日時';
+COMMENT ON COLUMN t_daily_click_details.updated_at IS '最終更新日時';
 ```
+
+> [!NOTE]
+> `site_id` はNULL許容。未設定の場合はNULLが入る。
+> 複合主キーではCOALESCEでNULLを0に変換し、一意性を担保。
 
 ---
 
@@ -1967,7 +2109,7 @@ pg_dump -Fc -t t_daily_performance_details_2026 ansem_db > perf_2026_$(date +%Y%
 | 国マスタ | 作成 | 国際化対応・ISO準拠・外部キー制約 |
 | 部署マスタ | 作成 | 階層構造・将来の組織変更対応 |
 | 辞書テーブル | 選択的 | 種類が少なければコメント管理 |
-| 集計テーブルの外部キー | なし | パフォーマンス優先・スナップショット方式 |
+| 集計テーブルの外部キー | あり | データ整合性を担保。スナップショット名称カラムは別途保持 |
 | t_partner_sitesの命名 | t_プレフィックス | 可変データ・状態変化あり |
 
 ### トラブルシューティング
