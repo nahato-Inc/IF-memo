@@ -26,8 +26,10 @@ related: "[[ANSEM-ER図]], [[ANSEM-データ投入運用方針]], [[ANSEM-追加
 
 ```
 運用担当が書くスプシ（人間語）
-    ↓ 変換（バリデーション + ID解決 + 重複チェック）
-DB投入（機械語）
+    ↓ CSVダウンロード
+Python スクリプト（バリデーション + ID変換 + 重複チェック）
+    ↓
+DB投入（INSERT SQL生成 / 直接投入）
 ```
 
 | フェーズ | 方式 | 対象者 |
@@ -35,6 +37,10 @@ DB投入（機械語）
 | Phase 1（初期投入） | エンジニアが直接SQL投入 | エンジニア |
 | Phase 2（MVP運用） | やさしいスプシ＋変換スクリプト | 運用担当 |
 | Phase 3（本番） | 管理画面（WebUI）で登録 | 全員 |
+
+> [!TIP]
+> gogcli（Google Workspace CLI）の認証設定が済めば、スプシ直接読み取りも可能。
+> → [[gogcli導入ガイド]] 参照
 
 ---
 
@@ -65,59 +71,289 @@ DB投入（機械語）
 
 ---
 
-## 2. 入力フォーマット（m_influencers）
+## 2. 現行スプシとの対応（カラムマッピング）
 
-### 運用担当が入力する列
+### 現行スプシの問題点
 
-| スプシ列名（日本語） | DBカラム | 型 | 入力方式 | 必須 |
-|---------------------|----------|-----|---------|------|
-| IF名 | influencer_name | TEXT | 自由入力 | |
-| 活動名 | influencer_alias | TEXT | 自由入力 | |
-| メールアドレス | email_address | TEXT | 自由入力 | |
-| 電話番号 | phone_number | TEXT | 自由入力 | |
-| 敬称 | honorific | TEXT | ドロップダウン（様/さん等） | |
-| 所属名 | affiliation_name | TEXT | 自由入力 | |
-| 所属タイプ | affiliation_type_id | SMALLINT | ドロップダウン（事務所所属/フリーランス/企業専属） | |
-| 国 | country_id | SMALLINT | ドロップダウン（日本/アメリカ/韓国...） | |
-| ステータス | status_id | SMALLINT | ドロップダウン（契約中/休止中/契約終了） | |
-| コンプラ確認 | compliance_check | BOOLEAN | ○/× | |
-| 取引開始同意 | start_transaction_consent | BOOLEAN | ○/× | |
-| プライバシー同意 | privacy_consent | BOOLEAN | ○/× | |
+- 1シートに全情報がフラットに並んでいる（IF基本情報・SNS・口座・請求先・住所が混在）
+- 不要列がある（ロボ番号、請求部屋番号）
+- 列の並びに論理的なグループ分けがない
+- ドロップダウンが少なく、自由入力でブレが発生しやすい
+- SNS列に「Error: Unsupported provider」が表示されるバグあり
 
-### スクリプトが自動生成する列
+### 現行列 → 新DB マッピング
 
-| DBカラム | 生成ルール |
-|----------|----------|
-| influencer_id | IDENTITY（DB自動採番） |
-| login_id | ルールベースで自動生成（例: IF-00001） |
-| version | 1（固定） |
-| created_by / updated_by | インポート実行者のagent_id |
-| created_at / updated_at | CURRENT_TIMESTAMP |
+#### IF基本情報 → m_influencers
+
+| 現行スプシ | 新DB | 備考 |
+|-----------|------|------|
+| マスター名 | influencer_name | |
+| コンプラチェック | compliance_check | BOOLEAN |
+| 区分 / 事務所個人 | affiliation_type_id | 1:事務所 / 2:フリーランス / 3:企業専属 |
+| 所属 (正式名称) | affiliation_name | |
+| 様/御中 | honorific | |
+| メールアドレス | email_address | |
+
+#### SNS → t_influencer_sns_accounts
+
+| 現行スプシ | 新DB | 備考 |
+|-----------|------|------|
+| Instagram | account_url + platform_id=1 | |
+| youtube | account_url + platform_id=2 | |
+| twitter | account_url + platform_id=3 | |
+| tiktok | account_url + platform_id=4 | |
+| 任意 | account_url + platform_id=? | その他SNS |
+
+#### 銀行口座 → t_bank_accounts
+
+| 現行スプシ | 新DB | 備考 |
+|-----------|------|------|
+| 銀行名 | bank_name | |
+| 支店 | branch_name | |
+| 口座種別 | account_type | 普通/当座/貯蓄 |
+| 口座番号 | account_number | 半角数字7桁 |
+| 口座名義 | account_holder_name | 全角カタカナ |
+
+#### 請求先 → t_billing_info
+
+| 現行スプシ | 新DB | 備考 |
+|-----------|------|------|
+| 適格請求書番号 (T+13桁) | invoice_registration_number | |
+| 請求先名 | billing_name | |
+| 請求部署名 | billing_department | |
+
+#### 住所 → t_addresses
+
+| 現行スプシ | 新DB | 備考 |
+|-----------|------|------|
+| 郵便番号 | postal_code | |
+| お届け先住所 | address_line1 | |
+| お届け先名称 | recipient_name | |
+| お届け先名称２ | recipient_name（2件目） | 2つ目の住所として登録 |
+| お届け先電話番号 | phone_number | |
+
+#### 担当・部署
+
+| 現行スプシ | 新DB | 備考 |
+|-----------|------|------|
+| 担当者 | t_influencer_agent_assignments.agent_id | m_agentsと紐付け |
+| 第一〜第五 | m_departments 参照 | 担当部署 |
+| ジャンル | t_account_categories.category_id | m_categoriesと紐付け |
+
+#### 除外した列
+
+| 現行スプシ | 理由 |
+|-----------|------|
+| id | 新規自動採番（GENERATED ALWAYS AS IDENTITY） |
+| エビデンス / 発注書 | ファイル管理（t_files）で将来対応 |
+| ロボ番号 | 不要 |
+| 請求部屋番号 | 不要 |
+
+---
+
+## 3. 新スプシテンプレート設計
+
+### 基本方針
+
+- **1シート・フラット構造**（運用担当がわかりやすいことを最優先）
+- 色分けセクションで論理グループを視覚的に区別
+- ドロップダウンで入力ブレを防止
+- 変換スクリプトが裏でテーブルごとに振り分ける
+
+### テンプレート列構成
+
+```
+🟦 基本情報          🟩 SNS            🟨 銀行口座        🟪 請求先・住所
+┌───────────────┬──────────────┬──────────────┬─────────────────┐
+│ A: 担当者      │ J: Instagram │ O: 銀行名    │ T: 適格請求書番号│
+│ B: 担当部署    │ K: YouTube   │ P: 支店名    │ U: 請求先名     │
+│ C: マスター名  │ L: Twitter/X │ Q: 口座種別  │ V: 請求部署名   │
+│ D: コンプラ    │ M: TikTok    │ R: 口座番号  │ W: 郵便番号     │
+│ E: 区分       │ N: その他SNS  │ S: 口座名義  │ X: 住所         │
+│ F: 所属名     │              │              │ Y: 届け先名称   │
+│ G: 様/御中    │              │              │ Z: 電話番号     │
+│ H: メールアドレス│             │              │                │
+│ I: ジャンル    │              │              │                │
+└───────────────┴──────────────┴──────────────┴─────────────────┘
+```
+
+**合計26列**（A〜Z）
+
+### 各列の詳細定義
+
+#### 🟦 基本情報（A〜I列）
+
+| 列 | 列名 | 入力方式 | バリデーション | DB先 |
+|----|------|---------|-------------|------|
+| A | 担当者 | ドロップダウン | m_agents一覧から選択 | t_influencer_agent_assignments |
+| B | 担当部署 | ドロップダウン | 第一〜第五 | m_departments |
+| C | マスター名 | 自由入力 | 必須。空白不可 | m_influencers.influencer_name |
+| D | コンプラチェック | ドロップダウン | ○ / × | m_influencers.compliance_check |
+| E | 区分 | ドロップダウン | 事務所所属 / フリーランス / 企業専属 | m_influencers.affiliation_type_id |
+| F | 所属名(正式名称) | 自由入力 | 区分が「事務所」の場合は必須 | m_influencers.affiliation_name |
+| G | 様/御中 | ドロップダウン | 様 / 御中 / さん | m_influencers.honorific |
+| H | メールアドレス | 自由入力 | メール形式チェック | m_influencers.email_address |
+| I | ジャンル | ドロップダウン | m_categories一覧から選択 | t_account_categories |
+
+#### 🟩 SNS（J〜N列）
+
+| 列 | 列名 | 入力方式 | バリデーション | DB先 |
+|----|------|---------|-------------|------|
+| J | Instagram | 自由入力 | URL形式 or アカウント名 | t_influencer_sns_accounts (platform=1) |
+| K | YouTube | 自由入力 | URL形式 or チャンネル名 | t_influencer_sns_accounts (platform=2) |
+| L | Twitter/X | 自由入力 | URL形式 or @ユーザー名 | t_influencer_sns_accounts (platform=3) |
+| M | TikTok | 自由入力 | URL形式 or @ユーザー名 | t_influencer_sns_accounts (platform=4) |
+| N | その他SNS | 自由入力 | 任意 | t_influencer_sns_accounts (platform=5) |
+
+#### 🟨 銀行口座（O〜S列）
+
+| 列 | 列名 | 入力方式 | バリデーション | DB先 |
+|----|------|---------|-------------|------|
+| O | 銀行名 | 自由入力 | 「銀行」不要 | t_bank_accounts.bank_name |
+| P | 支店名 | 自由入力 | 「支店」不要。ゆうちょは漢数字3桁 | t_bank_accounts.branch_name |
+| Q | 口座種別 | ドロップダウン | 普通 / 当座 / 貯蓄 | t_bank_accounts.account_type |
+| R | 口座番号 | 自由入力 | 半角数字7桁 | t_bank_accounts.account_number |
+| S | 口座名義 | 自由入力 | 全角カタカナ（小文字不可） | t_bank_accounts.account_holder_name |
+
+#### 🟪 請求先・住所（T〜Z列）
+
+| 列 | 列名 | 入力方式 | バリデーション | DB先 |
+|----|------|---------|-------------|------|
+| T | 適格請求書番号 | 自由入力 | T+13桁の形式チェック | t_billing_info.invoice_registration_number |
+| U | 請求先名 | 自由入力 | 様/御中をつける | t_billing_info.billing_name |
+| V | 請求部署名 | 自由入力 | 任意 | t_billing_info.billing_department |
+| W | 郵便番号 | 自由入力 | XXX-XXXX形式 | t_addresses.postal_code |
+| X | 住所 | 自由入力 | | t_addresses.address_line1 |
+| Y | 届け先名称 | 自由入力 | | t_addresses.recipient_name |
+| Z | 電話番号 | 自由入力 | 数字+ハイフン | t_addresses.phone_number |
 
 ### ドロップダウン値の対応表
 
 ```
-【所属タイプ】
-  事務所所属 → 1
-  フリーランス → 2
-  企業専属 → 3
+【担当部署】（B列）
+  第一 → department_id（m_departmentsから）
+  第二 → 〃
+  第三 → 〃
+  第四 → 〃
+  第五 → 〃
 
-【ステータス】
-  契約中 → 1
-  休止中 → 2
-  契約終了 → 3
+【区分】（E列）
+  事務所所属 → affiliation_type_id = 1
+  フリーランス → affiliation_type_id = 2
+  企業専属 → affiliation_type_id = 3
 
-【国（主要）】
-  日本 → 392
-  アメリカ → 840
-  韓国 → 410
-  タイ → 764
-  （m_countriesマスタに準拠）
+【口座種別】（Q列）
+  普通 → 1
+  当座 → 2
+  貯蓄 → 3
 ```
 
 ---
 
-## 3. 重複防止アイデア
+## 4. Google Sheets テンプレート作成手順
+
+### Step 1: スプレッドシート作成
+
+1. Google Sheets で新規スプレッドシートを作成
+2. ファイル名: `【ANSEM】IFマスタ一括登録テンプレート`
+3. シート名: `IF登録`
+
+### Step 2: ヘッダー行の設定（1行目）
+
+1. A1〜Z1 に列名を入力（上記テンプレート列構成の通り）
+2. 1行目を **固定**（表示 → 行1まで固定）
+3. 1行目を **太字 + 背景色** で視覚的に区別:
+   - A〜I: 🟦 青系（#D0E0FF）— 基本情報
+   - J〜N: 🟩 緑系（#D0FFD0）— SNS
+   - O〜S: 🟨 黄系（#FFFFD0）— 銀行口座
+   - T〜Z: 🟪 紫系（#E8D0FF）— 請求先・住所
+
+### Step 3: ドロップダウン設定
+
+1. **「選択肢」シートを追加**（非表示にする）
+   - 担当者一覧（m_agentsの名前リスト）
+   - 部署一覧（第一、第二、第三、第四、第五）
+   - 区分（事務所所属、フリーランス、企業専属）
+   - コンプラ（○、×）
+   - 敬称（様、御中、さん）
+   - 口座種別（普通、当座、貯蓄）
+   - ジャンル一覧（m_categoriesの名前リスト）
+
+2. **データの入力規則を設定**（各ドロップダウン列）
+   - A列: データ → データの入力規則 → リスト（「選択肢」シートから）
+   - B列: 同上
+   - D, E, G, I, Q 列: 同上
+
+### Step 4: 入力規則（バリデーション）
+
+| 列 | ルール |
+|----|-------|
+| H（メール） | テキスト → 有効なメールアドレス |
+| R（口座番号） | テキスト → カスタム数式 `=AND(LEN(R2)=7, ISNUMBER(VALUE(R2)))` |
+| T（請求書番号） | テキスト → カスタム数式 `=REGEXMATCH(T2, "^T[0-9]{13}$")` |
+| W（郵便番号） | テキスト → カスタム数式 `=REGEXMATCH(W2, "^[0-9]{3}-[0-9]{4}$")` |
+
+### Step 5: 補助機能
+
+1. **サンプルデータ行**（2行目）
+   - 全列にサンプル値を入力し、薄いグレー背景に
+   - 運用担当が入力イメージを掴みやすくする
+
+2. **注意書きシート**を追加
+   - 入力ルールの説明
+   - ドロップダウンの意味
+   - 「わからなかったら空欄でOK、後で確認します」の一言
+
+3. **条件付き書式**
+   - C列（マスター名）が空 → 赤背景（必須項目の強調）
+   - H列がメール形式でない → 赤背景
+
+### Step 6: 共有設定
+
+1. 運用担当に「編集者」権限で共有
+2. テンプレートは「コピーして使う」運用
+   - 元テンプレートは編集不可（閲覧のみ）
+   - 各担当者がコピーして自分のIFデータを入力
+
+---
+
+## 5. 変換スクリプトの流れ（Python）
+
+```
+CSV読み込み
+    ↓
+Step 1: 基本バリデーション
+    - 必須列の空チェック（C: マスター名）
+    - 形式チェック（メール、口座番号、郵便番号、請求書番号）
+    - ドロップダウン値の妥当性チェック
+    ↓
+Step 2: ID変換
+    - 担当者名 → agent_id（m_agents参照）
+    - 部署名 → department_id（m_departments参照）
+    - 区分名 → affiliation_type_id
+    - ジャンル名 → category_id（m_categories参照）
+    - ○/× → TRUE/FALSE
+    ↓
+Step 3: 重複チェック
+    - マスター名の完全一致チェック（既存DB照合）
+    - メールアドレスの重複チェック
+    - SNS URLの重複チェック
+    ↓
+Step 4: テーブル振り分け
+    - 1行のフラットデータを正規化して各テーブル用に分割
+    - m_influencers / t_influencer_sns_accounts / t_bank_accounts /
+      t_billing_info / t_addresses / t_influencer_agent_assignments /
+      t_account_categories
+    ↓
+Step 5: 出力
+    - DRY RUN: INSERT SQL をファイル出力（目視確認用）
+    - 本番: DB直接INSERT（psycopg2等）
+    - エラーレポート: バリデーションNG行の一覧をCSV出力
+```
+
+---
+
+## 6. 重複防止アイデア
 
 ### 現状の問題
 
@@ -180,10 +416,12 @@ DB投入（機械語）
 
 ## TODO
 
-- [ ] m_influencers 用スプシテンプレート作成
+- [ ] Google Sheets テンプレート作成（Step 1-6 に沿って）
+- [ ] 「選択肢」シートのマスタ値を確定（担当者一覧、ジャンル一覧）
+- [ ] サンプルデータ作成（2行目）
 - [ ] 変換スクリプト（Python）作成
+- [ ] DRY RUNテスト
 - [ ] 他テーブルの入力フォーマット定義
-- [ ] 重複防止アイデアをNotionにも記載
 - [ ] 運用マニュアル作成
 
 ---
