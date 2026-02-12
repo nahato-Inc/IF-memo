@@ -24,19 +24,101 @@ related: "[[ANSEM-ER図]], [[ANSEM-データ投入運用方針]], [[ANSEM-追加
 
 ## 方針
 
+> [!IMPORTANT]
+> 一括登録は **初回移行だけでなく、今後も継続的に使う機能**。
+> 使い捨てスクリプトではなく、**再利用可能なCLIツール** として設計する。
+
+### 継続的に使うユースケース
+
+| タイミング | ユースケース |
+|-----------|------------|
+| 初回移行 | 既存スプシからの全データ移行 |
+| 月次 | 新規IFの一括登録（営業チームが溜めて一括投入） |
+| 案件開始時 | キャンペーン単位でIFを一括追加 |
+| 定期 | パートナー・クライアントの追加更新 |
+| 随時 | 単価の一括変更、担当者の一括変更 |
+
+### データフロー
+
 ```
 運用担当が書くスプシ（人間語）
     ↓ CSVダウンロード
-Python スクリプト（バリデーション + ID変換 + 重複チェック）
+ansem-import CLIツール（Python）
+    ├── バリデーション
+    ├── ID変換
+    ├── 重複チェック
+    └── テーブル振り分け
     ↓
-DB投入（INSERT SQL生成 / 直接投入）
+DB投入（DRY RUN / 本番）
+    ↓
+ingestion_logs に実行記録
 ```
 
-| フェーズ | 方式 | 対象者 |
-|---------|------|--------|
-| Phase 1（初期投入） | エンジニアが直接SQL投入 | エンジニア |
-| Phase 2（MVP運用） | やさしいスプシ＋変換スクリプト | 運用担当 |
-| Phase 3（本番） | 管理画面（WebUI）で登録 | 全員 |
+### フェーズ別の進化
+
+| フェーズ | 方式 | 対象者 | ツール形態 |
+|---------|------|--------|-----------|
+| Phase 1（初期投入） | エンジニアが直接SQL投入 | エンジニア | — |
+| Phase 2（MVP運用） | スプシ＋CLIツール | 運用担当 | `ansem-import` コマンド |
+| Phase 3（本番） | 管理画面（WebUI）で登録 | 全員 | WebUI（裏側はPhase 2のロジック再利用） |
+
+### CLIツール設計（ansem-import）
+
+```bash
+# 基本コマンド
+ansem-import --table influencers --file data.csv --dry-run   # DRY RUN（SQL出力のみ）
+ansem-import --table influencers --file data.csv              # 本番投入
+ansem-import --table partners --file partners.csv             # 他テーブルにも対応
+
+# オプション
+--dry-run        SQL出力のみ（DB変更なし）
+--skip-errors    エラー行をスキップして続行
+--report out.csv エラーレポートをCSV出力
+--verbose        詳細ログ出力
+```
+
+### 使い捨て vs 再利用の設計差
+
+| 観点 | 使い捨て | 再利用前提（採用） |
+|------|---------|-----------------|
+| コード品質 | 動けばOK | テスト付き・エラーハンドリング丁寧 |
+| 対象テーブル | m_influencersだけ | 全テーブル対応（設定ファイルで切替） |
+| 実行方法 | 手動 `python import.py` | CLIツール（`ansem-import`） |
+| ログ | print文 | `ingestion_logs` にDB記録 |
+| エラー処理 | 全体が止まる | エラー行スキップ + レポート出力 |
+| テーブル定義 | コードにハードコード | YAML/JSON設定ファイルで管理 |
+
+### 設定ファイル構想（YAML）
+
+```yaml
+# tables/influencers.yaml
+table: m_influencers
+display_name: インフルエンサー
+columns:
+  - csv: マスター名
+    db: influencer_name
+    required: true
+  - csv: 区分
+    db: affiliation_type_id
+    type: dropdown
+    mapping:
+      事務所所属: 1
+      フリーランス: 2
+      企業専属: 3
+  # ...
+
+related_tables:
+  - table: t_influencer_sns_accounts
+    columns:
+      - csv: Instagram
+        db: account_url
+        extra: { platform_id: 1 }
+      # ...
+```
+
+> [!TIP]
+> 新しいテーブルの一括登録を追加するときは、YAMLファイルを追加するだけでOK。
+> コードの変更は不要。
 
 > [!TIP]
 > gogcli（Google Workspace CLI）の認証設定が済めば、スプシ直接読み取りも可能。
