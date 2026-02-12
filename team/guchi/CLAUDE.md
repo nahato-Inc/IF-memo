@@ -17,6 +17,9 @@
 - `team/guchi/projects/If-DB/ER図/ANSEM-ER図（ビジュアル版）.md` - Mermaid ER図（ドメイン別分割）
 - `team/guchi/projects/If-DB/レビュー結果/ANSEM-ER図レビュー.md` - 設計レビュー結果
 
+#### レビュー
+- `team/guchi/projects/If-DB/レビューガイド/ANSEM-DB設計レビューガイド.md` - レビューフロー・チェックリスト
+
 #### 運用・機能
 - `team/guchi/projects/If-DB/ANSEM-データ投入運用方針.md` - データ投入の運用方針
 - `team/guchi/projects/If-DB/ANSEM-一括登録機能メモ.md` - 一括登録機能の仕様メモ
